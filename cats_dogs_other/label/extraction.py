@@ -1,44 +1,23 @@
-from dataclasses import dataclass
-from io import BytesIO
+import json
 from pathlib import Path
+from typing import Any
 
-import fitz
-from fitz import Pixmap
+import mlflow.keras
 
-
-def convert_pixmap_to_rgb(pixmap) -> Pixmap:
-    """Convert to rgb in order to write on png"""
-    # check if it is already on rgb
-    if pixmap.n < 4:
-        return pixmap
-    else:
-        return fitz.Pixmap(fitz.csRGB, pixmap)
+from .s3_wrapper import IS3ClientWrapper
 
 
-@dataclass
-class ExtractImagesResult:
-    number_files_input: int
-    number_images_output: int
+def extraction_from_annotation_file(bucket_name: str, s3_path: str, filename: str, s3_client: IS3ClientWrapper) -> tuple[dict[Any, Any], set[Any]]:
+    Path(filename).parent.mkdir(parents=True, exist_ok=True)
+    s3_client.download_file(bucket_name, s3_path, filename)
 
-
-def extract_images(pdfs_directory_path: str, images_directory_path: str) -> ExtractImagesResult:
-    pdfs = [p for p in Path(pdfs_directory_path).iterdir() if p.is_file()]
-    Path(images_directory_path).mkdir(parents=True, exist_ok=True)
-    number_images_output = 0
-    for pdf_path in pdfs:
-        with open(pdf_path, "rb") as pdf_stream:
-            pdf_bytes = pdf_stream.read()
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
-            number_pages = 1 if len(document) == 1 else len(document) - 1
-            for index in range(number_pages):
-                images = document.get_page_images(index)
-                for index_image, image in enumerate(images):
-                    xref = image[0]
-                    image_pix = fitz.Pixmap(document, xref)
-                    image_bytes_io = BytesIO(convert_pixmap_to_rgb(image_pix).tobytes())
-                    filename = "{0}_page{1}_index{2}.png".format(pdf_path.stem, str(index), str(index_image))
-                    number_images_output = number_images_output + 1
-                    with open(Path(images_directory_path) / filename, "wb") as file_stream:
-                        file_stream.write(image_bytes_io.getbuffer())
-
-    return ExtractImagesResult(number_files_input=len(pdfs), number_images_output=number_images_output)
+    extract = {}
+    classes = set()
+    with open(filename) as file:
+        annotations = json.load(file)["annotations"]
+        for annotation in annotations:
+            label = annotation["annotation"]["label"]
+            extract[annotation["fileName"]] = label
+            classes.add(label)
+    mlflow.log_dict(extract, "annotations/extract.json")
+    return extract, classes
